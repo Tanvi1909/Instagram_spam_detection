@@ -1,0 +1,150 @@
+# instagram_spam_detection.py
+# Usage:
+#   Place train.csv and test.csv in the same folder as this script and run:
+#     python instagram_spam_detection.py
+#
+# Output files:
+#   - instagram_spam_pipeline.pkl  (saved trained pipeline)
+#   - instagram_spam_detection_retrain.py (helper script to re-train quickly)
+
+import pandas as pd
+import joblib
+import os
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import (
+    accuracy_score, precision_score, recall_score, f1_score,
+    classification_report, confusion_matrix
+)
+
+# -----------------------
+# Config / file paths
+# -----------------------
+TRAIN_CSV = "train.csv"
+TEST_CSV = "test.csv"
+TARGET_COL = "fake"            # expected target column in your files
+MODEL_OUT = "instagram_spam_pipeline.pkl"
+
+# -----------------------
+# Load data
+# -----------------------
+if not os.path.exists(TRAIN_CSV) or not os.path.exists(TEST_CSV):
+    raise FileNotFoundError("train.csv and/or test.csv not found in the current folder.")
+
+train = pd.read_csv(TRAIN_CSV)
+test = pd.read_csv(TEST_CSV)
+
+# Ensure target column exists
+if TARGET_COL not in train.columns or TARGET_COL not in test.columns:
+    raise KeyError(f"Target column '{TARGET_COL}' not found in the uploaded CSVs. "
+                   "Please ensure the column exists and is named 'fake'.")
+
+# Use all other columns as numeric features
+feature_cols = [c for c in train.columns if c != TARGET_COL]
+X_train = train[feature_cols]
+y_train = train[TARGET_COL]
+X_test = test[feature_cols]
+y_test = test[TARGET_COL]
+
+# Basic check: convert non-numeric columns to numeric if any (attempt)
+# (your files appear numeric already; these lines are just safe-guards)
+X_train = X_train.apply(pd.to_numeric, errors='coerce')
+X_test = X_test.apply(pd.to_numeric, errors='coerce')
+
+# Fill or drop missing values (simple approach: fill with column median)
+if X_train.isnull().any().any() or X_test.isnull().any().any():
+    medians = X_train.median()
+    X_train = X_train.fillna(medians)
+    X_test = X_test.fillna(medians)
+
+# -----------------------
+# Build pipelines
+# -----------------------
+pipeline_rf = Pipeline([
+    ("scaler", StandardScaler()),
+    ("rf", RandomForestClassifier(n_estimators=100, random_state=42))
+])
+
+pipeline_lr = Pipeline([
+    ("scaler", StandardScaler()),
+    ("lr", LogisticRegression(max_iter=1000, random_state=42))
+])
+
+# -----------------------
+# Train
+# -----------------------
+print("Training Random Forest...")
+pipeline_rf.fit(X_train, y_train)
+
+print("Training Logistic Regression...")
+pipeline_lr.fit(X_train, y_train)
+
+# -----------------------
+# Evaluate on test set
+# -----------------------
+def evaluate(name, pipeline, X, y_true):
+    y_pred = pipeline.predict(X)
+    acc = accuracy_score(y_true, y_pred)
+    prec = precision_score(y_true, y_pred, zero_division=0)
+    rec = recall_score(y_true, y_pred, zero_division=0)
+    f1 = f1_score(y_true, y_pred, zero_division=0)
+    print(f"\n{name} evaluation:")
+    print(f"  Accuracy:  {acc:.4f}")
+    print(f"  Precision: {prec:.4f}")
+    print(f"  Recall:    {rec:.4f}")
+    print(f"  F1-score:  {f1:.4f}")
+    print("  Confusion matrix:")
+    print(confusion_matrix(y_true, y_pred))
+    print("  Classification report:")
+    print(classification_report(y_true, y_pred, zero_division=0))
+    return f1
+
+f1_rf = evaluate("Random Forest", pipeline_rf, X_test, y_test)
+f1_lr = evaluate("Logistic Regression", pipeline_lr, X_test, y_test)
+
+# -----------------------
+# Choose best model
+# -----------------------
+if f1_rf >= f1_lr:
+    best_pipeline = pipeline_rf
+    chosen = "Random Forest"
+else:
+    best_pipeline = pipeline_lr
+    chosen = "Logistic Regression"
+
+# Save chosen pipeline
+joblib.dump(best_pipeline, MODEL_OUT)
+print(f"\nSelected best model: {chosen}")
+print(f"Saved trained pipeline to: {MODEL_OUT}")
+
+# -----------------------
+# Helper: save a small retrain script for convenience
+# -----------------------
+retrain_script = """
+# instagram_spam_detection_retrain.py
+# Quick retrain script to re-generate instagram_spam_pipeline.pkl
+
+import pandas as pd
+import joblib
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
+from sklearn.ensemble import RandomForestClassifier
+
+train = pd.read_csv('train.csv')
+target = 'fake'
+features = [c for c in train.columns if c != target]
+X = train[features].apply(pd.to_numeric, errors='coerce').fillna(train[features].median())
+y = train[target]
+
+pipe = Pipeline([('scaler', StandardScaler()), ('rf', RandomForestClassifier(n_estimators=100, random_state=42))])
+pipe.fit(X, y)
+joblib.dump(pipe, 'instagram_spam_pipeline.pkl')
+print('Retrained and saved instagram_spam_pipeline.pkl')
+"""
+
+with open("instagram_spam_detection_retrain.py", "w") as f:
+    f.write(retrain_script.strip())
+
+print("Wrote helper retrain script: instagram_spam_detection_retrain.py")
